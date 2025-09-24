@@ -1,0 +1,11 @@
+Flask==2.3.3
+cohere==5.18.0
+langchain==0.3.27
+langchain-community==0.3.29
+langchain-openai==0.3.33
+neo4j==5.28.2
+PyPDF2==3.0.1
+PyMuPDF==1.26.4
+python-dotenv==1.1.1
+openai==1.109.0
+gunicorn==21.2.0

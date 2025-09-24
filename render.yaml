@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: harry-potter-chat
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    envVars:
+      - key: COHERE_API_KEY
+        value: 8hBcb6YBzGqsM9gKkrkieSbhqbeBQ0UHchNpgLr4
+      - key: NEO4J_URI
+        value: neo4j+s://ef78fe3e.databases.neo4j.io
+      - key: NEO4J_USERNAME
+        value: neo4j
+      - key: NEO4J_PASSWORD
+        value: NXgD8hLRCpo9Qx2_hywyvi1hFGy5e0ozmi3f5eg80tk
+      - key: NEO4J_DATABASE
+        value: neo4j
+      - key: SECRET_KEY
+        value: your-secret-key-change-this
