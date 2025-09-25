@@ -306,15 +306,121 @@ Return only valid JSON, no other text.
             
         print(f"Created {len(chunks)} chunk nodes with LLM analysis")
 
+    def find_duplicate_characters(self, all_characters: List[str]) -> Dict[str, List[str]]:
+        """Use LLM to identify duplicate characters that should be merged"""
+        if len(all_characters) < 2:
+            return {}
+        
+        # Create groups of similar character names for analysis
+        character_groups = []
+        for i in range(0, len(all_characters), 10):  # Process in batches of 10
+            group = all_characters[i:i+10]
+            character_groups.append(group)
+        
+        duplicate_groups = {}
+        
+        for group in character_groups:
+            if len(group) < 2:
+                continue
+                
+            # Create prompt to identify duplicates
+            duplicate_prompt = f"""
+            Analyze these character names from a book and identify which ones refer to the same character:
+            
+            Character names: {', '.join(group)}
+            
+            Return a JSON object where keys are the canonical character names and values are lists of all variations that refer to the same character.
+            
+            Example format:
+            {{
+                "Harry Potter": ["Harry", "Harry Potter", "Mr. Potter"],
+                "Hermione Granger": ["Hermione", "Hermione Granger", "Miss Granger"]
+            }}
+            
+            Only include characters that have multiple variations. If a character has only one name, don't include them.
+            Return only valid JSON, no other text.
+            """
+            
+            try:
+                response = self.cohere_client.chat(
+                    model="command-a-03-2025",
+                    message=duplicate_prompt,
+                    temperature=0.3,
+                    max_tokens=500
+                )
+                
+                analysis_text = response.text.strip()
+                if analysis_text.startswith('```json'):
+                    analysis_text = analysis_text[7:-3]
+                elif analysis_text.startswith('```'):
+                    analysis_text = analysis_text[3:-3]
+                
+                result = json.loads(analysis_text)
+                duplicate_groups.update(result)
+                
+            except Exception as e:
+                print(f"Error analyzing character duplicates: {e}")
+                continue
+        
+        return duplicate_groups
+
+    def merge_duplicate_characters(self, duplicate_groups: Dict[str, List[str]]):
+        """Merge duplicate character nodes into single nodes"""
+        for canonical_name, variations in duplicate_groups.items():
+            if len(variations) <= 1:
+                continue
+                
+            print(f"Merging character variations: {variations} -> {canonical_name}")
+            
+            # Find the best variation to keep as canonical
+            canonical_variation = variations[0]  # Use first as canonical
+            
+            # Merge all variations into the canonical node
+            for variation in variations[1:]:
+                merge_query = """
+                MATCH (canonical:Character {name: $canonical})
+                MATCH (variation:Character {name: $variation})
+                WHERE canonical <> variation
+                WITH canonical, variation
+                // Merge relationships from variation to canonical
+                OPTIONAL MATCH (variation)-[r:MENTIONED_IN]->(chunk)
+                FOREACH (rel IN CASE WHEN r IS NOT NULL THEN [r] ELSE [] END |
+                    MERGE (canonical)-[:MENTIONED_IN]->(chunk)
+                )
+                // Delete the variation node
+                DELETE variation
+                RETURN canonical
+                """
+                
+                self.kg.query(merge_query, params={
+                    'canonical': canonical_variation,
+                    'variation': variation
+                })
+            
+            # Update the canonical name if needed
+            if canonical_variation != canonical_name:
+                update_name_query = """
+                MATCH (char:Character {name: $old_name})
+                SET char.name = $new_name
+                RETURN char
+                """
+                
+                self.kg.query(update_name_query, params={
+                    'old_name': canonical_variation,
+                    'new_name': canonical_name
+                })
+
     def create_character_nodes(self, all_chunks: List[Dict]):
-        """Create character nodes with detailed LLM analysis"""
+        """Create character nodes with detailed LLM analysis and deduplication"""
         # Get all unique characters mentioned
         all_characters = set()
         for chunk in all_chunks:
             all_characters.update(chunk.get('charactersMentioned', []))
         
+        all_characters = list(all_characters)
         print(f"Found {len(all_characters)} characters to analyze")
         
+        # First, create all character nodes
         for character in all_characters:
             if not character.strip():
                 continue
@@ -354,6 +460,17 @@ Return only valid JSON, no other text.
                 })
         
         print("Created character nodes with detailed LLM analysis")
+        
+        # Now find and merge duplicates
+        print("Finding duplicate characters...")
+        duplicate_groups = self.find_duplicate_characters(all_characters)
+        
+        if duplicate_groups:
+            print(f"Found {len(duplicate_groups)} groups of duplicate characters")
+            self.merge_duplicate_characters(duplicate_groups)
+            print("Merged duplicate characters")
+        else:
+            print("No duplicate characters found")
 
     def create_book_node(self, book_title: str, book_author: str):
         """Create a Book node to represent the entire book (like Form node in L5)"""
@@ -956,6 +1073,44 @@ Guidelines:
             return {}
         except Exception as e:
             print(f"Error getting character info: {e}")
+            return {}
+
+    def get_character_merge_statistics(self) -> Dict:
+        """Get statistics about character merging and deduplication"""
+        try:
+            # Get total character count
+            total_chars_query = """
+            MATCH (char:Character)
+            RETURN count(char) as total_characters
+            """
+            total_result = self.kg.query(total_chars_query)
+            total_characters = total_result[0]['total_characters'] if total_result else 0
+            
+            # Get characters with mentions
+            mentioned_chars_query = """
+            MATCH (char:Character)-[:MENTIONED_IN]->(chunk:Chunk)
+            RETURN count(DISTINCT char) as mentioned_characters
+            """
+            mentioned_result = self.kg.query(mentioned_chars_query)
+            mentioned_characters = mentioned_result[0]['mentioned_characters'] if mentioned_result else 0
+            
+            # Get characters with detailed analysis
+            analyzed_chars_query = """
+            MATCH (char:Character)
+            WHERE char.personality IS NOT NULL AND char.personality <> ''
+            RETURN count(char) as analyzed_characters
+            """
+            analyzed_result = self.kg.query(analyzed_chars_query)
+            analyzed_characters = analyzed_result[0]['analyzed_characters'] if analyzed_result else 0
+            
+            return {
+                'total_characters': total_characters,
+                'mentioned_characters': mentioned_characters,
+                'analyzed_characters': analyzed_characters,
+                'deduplication_applied': True
+            }
+        except Exception as e:
+            print(f"Error getting character statistics: {e}")
             return {}
 
     def get_book_info(self) -> Dict:
